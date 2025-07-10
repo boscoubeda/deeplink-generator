@@ -67,7 +67,11 @@ def generate_deeplink():
     )
 
     if response.status_code != 201:
-        return jsonify({"error": "Adjust API error", "details": response.json()}), 400
+    try:
+        error_details = response.json()
+    except ValueError:
+        error_details = {"raw_response": response.text}
+    return jsonify({"error": "Adjust API error", "details": error_details}), 400
 
     tracker_token = response.json()["tracker"]["tracker_token"]
 
