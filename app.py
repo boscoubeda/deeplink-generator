@@ -52,7 +52,6 @@ def generate_deeplink():
     if not link_token or not screen:
         return jsonify({"error": "Missing required fields: link_token, screen"}), 400
 
-    # CASE: Jobcard
     if screen == "jobcard":
         vacancy_id = params.get("vacancy_request_id")
         if not vacancy_id:
@@ -82,23 +81,64 @@ def generate_deeplink():
             "redirect_macos": fallback
         }
 
-        headers = {
-            "Authorization": f"Bearer {ADJUST_API_TOKEN}",
-            "Content-Type": "application/json"
+    elif screen == "jobfeed":
+        country_code = params.get("country_code")
+        sort_by = params.get("sort_by")
+        full_address = params.get("full_address")
+        radius = params.get("radius")
+        categories = params.get("categories")
+
+        if not all([country_code, sort_by, full_address, radius, categories]):
+            return jsonify({"error": "Missing one or more required parameters for jobfeed"}), 400
+
+        deeplink_path = "candidates/jobfeed"
+        deeplink_query = urlencode({
+            "country_code": country_code,
+            "sort_by": sort_by,
+            "full_address": full_address,
+            "radius": radius,
+            "categories": categories
+        })
+        utm_query = build_utm_query(utm)
+
+        deeplink_full = deeplink_path + "?" + deeplink_query
+        if utm_query:
+            deeplink_full += f"&{utm_query}"
+
+        fallback = f"https://open.jobandtalent.com/candidates/jobfeed?{deeplink_query}"
+        if utm_query:
+            fallback += f"&{utm_query}"
+
+        if not is_weblink_allowed(fallback):
+            return jsonify({"error": "Fallback URL not allowed", "fallback": fallback}), 400
+
+        adjust_payload = {
+            "link_token": link_token,
+            "shorten_url": True,
+            "ios_deep_link_path": deeplink_full,
+            "android_deep_link_path": deeplink_full,
+            "fallback": fallback,
+            "redirect_macos": fallback
         }
 
-        try:
-            response = requests.post(
-                "https://automate.adjust.com/engage/deep-links",
-                headers=headers,
-                json=adjust_payload
-            )
-            response.raise_for_status()
-            short_url = response.json().get("url")
-            if not short_url:
-                return jsonify({"error": "Adjust API did not return a URL"}), 500
-            return jsonify({"deeplink_final": short_url})
-        except requests.exceptions.RequestException as e:
-            return jsonify({"error": "Adjust API error", "details": str(e)}), 500
+    else:
+        return jsonify({"error": f"Screen '{screen}' not supported yet."}), 400
 
-    return jsonify({"error": f"Screen '{screen}' not supported yet."}), 400
+    headers = {
+        "Authorization": f"Bearer {ADJUST_API_TOKEN}",
+        "Content-Type": "application/json"
+    }
+
+    try:
+        response = requests.post(
+            "https://automate.adjust.com/engage/deep-links",
+            headers=headers,
+            json=adjust_payload
+        )
+        response.raise_for_status()
+        short_url = response.json().get("url")
+        if not short_url:
+            return jsonify({"error": "Adjust API did not return a URL"}), 500
+        return jsonify({"deeplink_final": short_url})
+    except requests.exceptions.RequestException as e:
+        return jsonify({"error": "Adjust API error", "details": str(e)}), 500
