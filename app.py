@@ -5,8 +5,8 @@ from urllib.parse import urlencode
 
 app = Flask(__name__)
 
-ADJUST_TOKEN = os.getenv("1cpS6nG6xKwG5g7jKKM5")
-APP_TOKEN = os.getenv("1oirevby_1olgkl1q")
+ADJUST_TOKEN = os.getenv("ADJUST_API_TOKEN")
+APP_TOKEN = os.getenv("ADJUST_APP_TOKEN")
 
 def build_deeplink(screen, params):
     if screen == "jobfeed":
