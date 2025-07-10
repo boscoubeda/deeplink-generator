@@ -152,6 +152,9 @@ def generate_deeplink():
     try:
         response = requests.post(ADJUST_API_URL, headers=headers, json=adjust_payload)
         response.raise_for_status()
+        short_url = response.json().get("url")
+        if not short_url:
+            return jsonify({"error": "Adjust API did not return a URL"}), 500
         return short_url, 200, {'Content-Type': 'text/plain'}
     except requests.exceptions.RequestException as e:
         return jsonify({"error": "Adjust API error", "details": str(e)}), 500
