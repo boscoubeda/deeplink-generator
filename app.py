@@ -1,100 +1,86 @@
 import os
+import re
 import requests
 from flask import Flask, request, jsonify
 from urllib.parse import urlencode
 
 app = Flask(__name__)
 
-# Cargar variables de entorno
-ADJUST_TOKEN = os.getenv("ADJUST_API_TOKEN")
-APP_TOKEN = os.getenv("ADJUST_APP_TOKEN")
+ADJUST_API_TOKEN = os.getenv("ADJUST_API_TOKEN")
 
-def build_deeplink(screen, params):
-    if screen == "jobfeed":
-        query = {
-            "country_code": params.get("country_code", ""),
-            "sort_by": params.get("sort_by", ""),
-            "full_address": params.get("full_address", ""),
-            "radius": params.get("radius", ""),
-            "categories": params.get("categories", "")
-        }
-    elif screen == "jobcard":
-        query = {
-            "vacancy_request_id": params.get("vacancy_request_id", "")
-        }
-    elif screen == "checkout":
-        query = {
-            "candidate_id": params.get("candidate_id", ""),
-            "checkout_id": params.get("checkout_id", "")
-        }
-    else:
-        return None
+# Patrones permitidos para fallback
+ALLOWED_WEBLINK_PATTERNS = [
+    r"^https?:\/\/link\.jobandtalent\.com([\/#\?].*)?$",
+    r"^https?:\/\/open\.jobandtalent\.com([\/#\?].*)?$",
+    r"^https?:\/\/open\.staging\.jobandtalent\.com([\/#\?].*)?$",
+    r"^https?:\/\/biz\.jobandtalent\.com([\/#\?].*)?$",
+    r"^https?:\/\/biz\.staging\.jobandtalent\.com([\/#\?].*)?$",
+    r"^https:\/\/(candidates\.staging\.jobandtalent\.com|candidates\.jobandtalent\.com)(\/.*)?$",
+    r"^https:\/\/es\.jobandtalent\.com(\/.*)?$",
+    r"^https:\/\/(jobs\.staging\.jobandtalent\.com|jobs\.jobandtalent\.com)(\/.*)?$"
+]
 
-    return f"myapp://{screen}?{urlencode(query)}"
+def is_weblink_allowed(weblink):
+    for pattern in ALLOWED_WEBLINK_PATTERNS:
+        if re.match(pattern, weblink):
+            return True
+    return False
+
+def build_deeplink_path(screen, params):
+    query = urlencode(params)
+    return f"{screen}?{query}"
 
 @app.route("/")
 def home():
-    return "Adjust Deeplink Generator is up."
+    return "Adjust Deep Link Builder is running."
 
 @app.route("/generate-deeplink", methods=["POST"])
 def generate_deeplink():
     payload = request.get_json()
-    if not payload:
-        return jsonify({"error": "No JSON body found"}), 400
 
+    link_token = payload.get("link_token")
     screen = payload.get("screen")
     params = payload.get("params", {})
-    utm = payload.get("utm", {})
-    campaign = payload.get("campaign", "")
-    adgroup = payload.get("adgroup", "")
-    creative = payload.get("creative", "")
+    fallback = payload.get("fallback")
 
-    if screen not in {"jobfeed", "jobcard", "checkout"}:
-        return jsonify({"error": f"Invalid screen type: {screen}"}), 400
+    if not link_token or not screen or not fallback:
+        return jsonify({"error": "Missing one or more required fields: link_token, screen, fallback"}), 400
 
-    deep_link = build_deeplink(screen, params)
-    if not deep_link:
-        return jsonify({"error": "Could not construct deep_link"}), 400
+    if not is_weblink_allowed(fallback):
+        return jsonify({"error": f"Fallback URL not allowed by security policy: {fallback}"}), 400
 
-    # Construir payload según Adjust Shortlink API
-    request_payload = {
-        "adjust_link": {
-            "app_token": APP_TOKEN,
-            "deep_link": deep_link,
-            "campaign": campaign,
-            "adgroup": adgroup,
-            "creative": creative,
-            "utm_parameters": {
-                "utm_source": utm.get("utm_source", ""),
-                "utm_campaign": utm.get("utm_campaign", ""),
-                "utm_medium": utm.get("utm_medium", "")
-            }
-        }
+    deeplink_path = build_deeplink_path(screen, params)
+
+    adjust_payload = {
+        "link_token": link_token,
+        "shorten_url": True,
+        "ios_deep_link_path": deeplink_path,
+        "android_deep_link_path": deeplink_path,
+        "fallback": fallback,
+        "redirect_macos": fallback
     }
 
     headers = {
-        "Authorization": f"Token {ADJUST_TOKEN}",
+        "Authorization": f"Bearer {ADJUST_API_TOKEN}",
         "Content-Type": "application/json"
     }
 
-    response = requests.post(
-        "https://shortlink.adjust.net/link",
-        headers=headers,
-        json=request_payload
-    )
+    try:
+        response = requests.post(
+            "https://automate.adjust.com/engage/deep-links",
+            headers=headers,
+            json=adjust_payload
+        )
+        response.raise_for_status()
+    except requests.exceptions.RequestException as e:
+        return jsonify({"error": "Adjust API error", "details": str(e)}), 500
 
-    if response.status_code != 200:
-        try:
-            error_details = response.json()
-        except ValueError:
-            error_details = {"raw_response": response.text}
-        return jsonify({"error": "Adjust API error", "details": error_details}), 400
+    try:
+        short_url = response.json().get("url")
+    except Exception:
+        return jsonify({"error": "Invalid JSON from Adjust", "raw": response.text}), 500
 
-    shortlink = response.json().get("shortlink")
+    if not short_url:
+        return jsonify({"error": "No shortlink returned"}), 500
 
-    if not shortlink:
-        return jsonify({"error": "Shortlink creation succeeded but no link returned"}), 500
-
-    return jsonify({
-        "deeplink_final": shortlink
-    })
+    return jsonify({"deeplink_final": short_url})
