@@ -55,7 +55,7 @@ def generate_deeplink():
         return jsonify({"error": "Missing required field: screen"}), 400
 
     if not link_token:
-        link_token = os.getenv("ADJUST_DEFAULT_LINK_TOKEN")
+        link_token = os.getenv("ADJUST_LINK_TOKEN")
         if not link_token:
             return jsonify({"error": "Missing link_token and no default available"}), 400
 
