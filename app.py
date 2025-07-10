@@ -5,6 +5,7 @@ from urllib.parse import urlencode
 
 app = Flask(__name__)
 
+# Cargar variables de entorno
 ADJUST_TOKEN = os.getenv("ADJUST_API_TOKEN")
 APP_TOKEN = os.getenv("ADJUST_APP_TOKEN")
 
@@ -44,16 +45,31 @@ def generate_deeplink():
     screen = payload.get("screen")
     params = payload.get("params", {})
     utm = payload.get("utm", {})
-    tracker_data = {
-        "name": payload.get("name", "Unnamed Link"),
-        "campaign": payload.get("campaign", ""),
-        "adgroup": payload.get("adgroup", ""),
-        "creative": payload.get("creative", ""),
-        "deep_link": build_deeplink(screen, params),
-    }
+    name = payload.get("name")
+    campaign = payload.get("campaign", "")
+    adgroup = payload.get("adgroup", "")
+    creative = payload.get("creative", "")
 
-    if not tracker_data["deep_link"]:
-        return jsonify({"error": "Invalid screen type or missing params"}), 400
+    # Validaciones básicas
+    if not name:
+        return jsonify({"error": "Missing 'name' field"}), 400
+    if screen not in {"jobfeed", "jobcard", "checkout"}:
+        return jsonify({"error": f"Invalid screen type: {screen}"}), 400
+
+    deep_link = build_deeplink(screen, params)
+    if not deep_link:
+        return jsonify({"error": "Could not construct deep_link"}), 400
+
+    # Construir payload para la API de Adjust
+    tracker_data = {
+        "tracker": {
+            "name": name,
+            "campaign": campaign,
+            "adgroup": adgroup,
+            "creative": creative,
+            "deep_link": deep_link
+        }
+    }
 
     headers = {
         "Authorization": f"Token {ADJUST_TOKEN}",
@@ -63,22 +79,25 @@ def generate_deeplink():
     response = requests.post(
         f"https://api.adjust.com/trackers?app_token={APP_TOKEN}",
         headers=headers,
-        json={"tracker": tracker_data}
+        json=tracker_data
     )
 
     if response.status_code != 201:
-    try:
-        error_details = response.json()
-    except ValueError:
-        error_details = {"raw_response": response.text}
-    return jsonify({"error": "Adjust API error", "details": error_details}), 400
+        try:
+            error_details = response.json()
+        except ValueError:
+            error_details = {"raw_response": response.text}
+        return jsonify({"error": "Adjust API error", "details": error_details}), 400
 
-    tracker_token = response.json()["tracker"]["tracker_token"]
+    tracker_token = response.json().get("tracker", {}).get("tracker_token")
 
-    # Armar deeplink final con utm tags
+    if not tracker_token:
+        return jsonify({"error": "Tracker created but no token returned"}), 500
+
+    # Construir deeplink final
     adjust_url = f"https://app.adjust.com/{tracker_token}"
     query_params = {
-        "deep_link": tracker_data["deep_link"],
+        "deep_link": deep_link,
         "utm_source": utm.get("utm_source", ""),
         "utm_campaign": utm.get("utm_campaign", ""),
         "utm_medium": utm.get("utm_medium", "")
