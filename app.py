@@ -1,116 +1,142 @@
 import os
 import requests
 from flask import Flask, request, jsonify
+from geopy.geocoders import Nominatim
+from urllib.parse import urlencode
 
 app = Flask(__name__)
+geolocator = Nominatim(user_agent="deeplink-generator")
 
-ADJUST_API_URL = "https://automate.adjust.com/engage/deep-links"
-LINK_TOKEN = os.getenv("ADJUST_LINK_TOKEN")
-JT_DOMAIN = os.getenv("JT_DOMAIN", "jobandtalent.com")
+ADJUST_ENDPOINT = "https://automate.adjust.com/engage/deep-links"
+DEFAULT_LINK_TOKEN = os.getenv("ADJUST_LINK_TOKEN")
 
-# Dummy geocoding function for jobfeed
-# In producción, deberías usar un servicio como Google Maps API
+ALLOWED_WEBLINK_DOMAINS = [
+    "link.jobandtalent.com",
+    "open.jobandtalent.com",
+    "open.staging.jobandtalent.com",
+    "biz.jobandtalent.com",
+    "biz.staging.jobandtalent.com",
+    "candidates.jobandtalent.com",
+    "candidates.staging.jobandtalent.com",
+    "es.jobandtalent.com",
+    "jobs.jobandtalent.com",
+    "jobs.staging.jobandtalent.com"
+]
+
+def validate_weblink(url):
+    from urllib.parse import urlparse
+    domain = urlparse(url).netloc
+    if any(domain.endswith(allowed) for allowed in ALLOWED_WEBLINK_DOMAINS):
+        return True
+    raise ValueError("Invalid weblink: not allowed by security policy")
+
+def resolve_order(sort_by):
+    return {
+        "created_at": "desc",
+        "start_at": "asc",
+        "location": "asc",
+        "best_paid": "desc",
+        "most_hours": "desc",
+        "least_hours": "asc"
+    }.get(sort_by, "asc")
+
+def utm_params_to_query(utm):
+    return urlencode({
+        "utm_source": utm.get("utm_source", ""),
+        "utm_campaign": utm.get("utm_campaign", ""),
+        "utm_medium": utm.get("utm_medium", "")
+    })
 
 def geocode_address(address):
+    location = geolocator.geocode(address)
+    if not location:
+        raise ValueError("Unable to geocode address")
     return {
-        "lat": 40.4168,
-        "lon": -3.7038,
-        "address": address
+        "lat": location.latitude,
+        "lon": location.longitude,
+        "address": location.address
     }
 
+def build_deeplink(screen, params, utm):
+    jt_domain = "jobandtalent.com"
 
-def build_adjust_link(link_token, deeplink, weblink):
-    headers = {
-        "Authorization": f"Bearer {os.getenv('ADJUST_API_TOKEN')}",
-        "Content-Type": "application/json"
-    }
-    payload = {
-        "link_token": link_token,
-        "shorten_url": True,
-        "ios_deep_link_path": deeplink,
-        "android_deep_link_path": deeplink,
-        "fallback": weblink,
-        "redirect_macos": weblink
-    }
+    if screen == "jobcard":
+        vacancy_request_id = params["vacancy_request_id"]
+        # Simulate API call to fetch job_opportunity (mocked)
+        job_opportunity_id = vacancy_request_id  # In production, you'd fetch this
 
-    response = requests.post(ADJUST_API_URL, headers=headers, json=payload)
+        deeplink_path = f"candidates/jobs/{job_opportunity_id}"
+        weblink = f"https://jobs.{jt_domain}/es/logistics/madrid/job-title"
 
-    if response.status_code == 200:
-        return response.json().get("url")
+    elif screen == "jobfeed":
+        geo = geocode_address(params["full_address"])
+        filters = {
+            "sort_by": params["sort_by"],
+            "sort_order": resolve_order(params["sort_by"]),
+            "lat": geo["lat"],
+            "lon": geo["lon"],
+            "address": geo["address"],
+            "radius": int(params.get("radius", 150)) * 1000
+        }
+        if params.get("categories"):
+            filters["categories"] = params["categories"].replace(" ", "")
+
+        deeplink_path = f"job_opportunities/country/{params['country_code']}?{urlencode(filters)}&{utm_params_to_query(utm)}"
+        weblink = f"https://jobs.{jt_domain}/{params['country_code'].lower()}?{utm_params_to_query(utm)}"
+
+    elif screen == "checkout":
+        deeplink_path = f"checkout_flow/{params['checkout_id']}/{params['candidate_id']}?{utm_params_to_query(utm)}"
+        weblink = f"https://es.{jt_domain}/checkout"
+
     else:
-        return jsonify({"error": "Adjust API error", "details": response.text}), 400
+        raise ValueError("Invalid screen type")
 
-
-@app.route("/")
-def index():
-    return "Adjust Deeplink Generator"
-
+    validate_weblink(weblink)
+    return deeplink_path, weblink
 
 @app.route("/generate-deeplink", methods=["POST"])
 def generate_deeplink():
     data = request.json
-    screen = data.get("screen")
-    params = data.get("params", {})
-    utm = data.get("utm", {})
-    link_token = data.get("link_token") or LINK_TOKEN
 
-    if not link_token:
-        return jsonify({"error": "Missing Adjust link_token"}), 400
+    try:
+        screen = data["screen"]
+        params = data["params"]
+        utm = data.get("utm", {})
+        link_token = data.get("link_token") or DEFAULT_LINK_TOKEN
 
-    if screen == "jobcard":
-        vacancy_id = params.get("vacancy_request_id")
-        if not vacancy_id:
-            return jsonify({"error": "Missing vacancy_request_id"}), 400
+        if not link_token:
+            return jsonify({"error": "Missing Adjust link_token"}), 400
 
-        deeplink_path = f"candidates/jobs/{vacancy_id}"
-        deeplink = f"{deeplink_path}?utm_source={utm.get('utm_source')}&utm_campaign={utm.get('utm_campaign')}&utm_medium={utm.get('utm_medium')}"
-        weblink = f"https://jobs.{JT_DOMAIN}/es/logistics/madrid/slug?utm_source={utm.get('utm_source')}&utm_campaign={utm.get('utm_campaign')}&utm_medium={utm.get('utm_medium')}"
+        deeplink_path, weblink = build_deeplink(screen, params, utm)
 
-        return build_adjust_link(link_token, deeplink, weblink)
+        payload = {
+            "link_token": link_token,
+            "shorten_url": True,
+            "ios_deep_link_path": deeplink_path,
+            "android_deep_link_path": deeplink_path,
+            "fallback": weblink,
+            "redirect_macos": weblink
+        }
 
-    elif screen == "jobfeed":
-        country = params.get("country_code")
-        sort_by = params.get("sort_by")
-        address = params.get("full_address")
-        radius = int(params.get("radius", 150)) * 1000
-        categories = params.get("categories", "").replace(" ", "")
+        headers = {
+            "Authorization": f"Bearer {os.getenv('ADJUST_API_TOKEN')}",
+            "Content-Type": "application/json"
+        }
 
-        if not country or not sort_by or not address:
-            return jsonify({"error": "Missing required jobfeed parameters"}), 400
+        response = requests.post(ADJUST_ENDPOINT, headers=headers, json=payload)
 
-        geo = geocode_address(address)
-        query_params = [
-            f"sort_by={sort_by}",
-            f"sort_order={'desc' if sort_by in ['created_at', 'best_paid', 'most_hours'] else 'asc'}",
-            f"lat={geo['lat']}",
-            f"lon={geo['lon']}",
-            f"address={geo['address']}",
-            f"radius={radius}"
-        ]
-        if categories:
-            query_params.append(f"categories={categories}")
+        if response.status_code != 200:
+            return jsonify({"error": "Adjust API error", "details": {"raw_response": response.text}}), 400
 
-        utm_params = f"utm_source={utm.get('utm_source')}&utm_campaign={utm.get('utm_campaign')}&utm_medium={utm.get('utm_medium')}"
-        query_string = "&".join(query_params)
+        deeplink = response.json().get("url")
+        return jsonify({"deeplink_final": deeplink}), 200
 
-        deeplink_path = f"job_opportunities/country/{country}"
-        deeplink = f"{deeplink_path}?{query_string}&{utm_params}"
-        weblink = f"https://jobs.{JT_DOMAIN}/{country.lower()}?{utm_params}"
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
-        return build_adjust_link(link_token, deeplink, weblink)
+@app.route("/", methods=["GET"])
+def index():
+    return "Deeplink Generator API is running."
 
-    elif screen == "checkout":
-        candidate_id = params.get("candidate_id")
-        checkout_id = params.get("checkout_id")
-
-        if not candidate_id or not checkout_id:
-            return jsonify({"error": "Missing checkout parameters"}), 400
-
-        deeplink_path = f"checkout/{candidate_id}/{checkout_id}"
-        deeplink = f"{deeplink_path}?utm_source={utm.get('utm_source')}&utm_campaign={utm.get('utm_campaign')}&utm_medium={utm.get('utm_medium')}"
-        weblink = f"https://jobs.{JT_DOMAIN}/checkout/{candidate_id}/{checkout_id}?utm_source={utm.get('utm_source')}&utm_campaign={utm.get('utm_campaign')}&utm_medium={utm.get('utm_medium')}"
-
-        return build_adjust_link(link_token, deeplink, weblink)
-
-    else:
-        return jsonify({"error": "Unsupported screen"}), 400
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=10000)
