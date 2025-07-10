@@ -28,7 +28,7 @@ def build_deeplink(screen, params):
             "checkout_id": params.get("checkout_id", "")
         }
     else:
-        return None  # pantalla no válida
+        return None
 
     return f"myapp://{screen}?{urlencode(query)}"
 
@@ -45,14 +45,10 @@ def generate_deeplink():
     screen = payload.get("screen")
     params = payload.get("params", {})
     utm = payload.get("utm", {})
-    name = payload.get("name")
     campaign = payload.get("campaign", "")
     adgroup = payload.get("adgroup", "")
     creative = payload.get("creative", "")
 
-    # Validaciones básicas
-    if not name:
-        return jsonify({"error": "Missing 'name' field"}), 400
     if screen not in {"jobfeed", "jobcard", "checkout"}:
         return jsonify({"error": f"Invalid screen type: {screen}"}), 400
 
@@ -60,14 +56,19 @@ def generate_deeplink():
     if not deep_link:
         return jsonify({"error": "Could not construct deep_link"}), 400
 
-    # Construir payload para la API de Adjust
-    tracker_data = {
-        "tracker": {
-            "name": name,
+    # Construir payload según Adjust Shortlink API
+    request_payload = {
+        "adjust_link": {
+            "app_token": APP_TOKEN,
+            "deep_link": deep_link,
             "campaign": campaign,
             "adgroup": adgroup,
             "creative": creative,
-            "deep_link": deep_link
+            "utm_parameters": {
+                "utm_source": utm.get("utm_source", ""),
+                "utm_campaign": utm.get("utm_campaign", ""),
+                "utm_medium": utm.get("utm_medium", "")
+            }
         }
     }
 
@@ -77,34 +78,23 @@ def generate_deeplink():
     }
 
     response = requests.post(
-        f"https://api.adjust.com/trackers?app_token={APP_TOKEN}",
+        "https://shortlink.adjust.net/link",
         headers=headers,
-        json=tracker_data
+        json=request_payload
     )
 
-    if response.status_code != 201:
+    if response.status_code != 200:
         try:
             error_details = response.json()
         except ValueError:
             error_details = {"raw_response": response.text}
         return jsonify({"error": "Adjust API error", "details": error_details}), 400
 
-    tracker_token = response.json().get("tracker", {}).get("tracker_token")
+    shortlink = response.json().get("shortlink")
 
-    if not tracker_token:
-        return jsonify({"error": "Tracker created but no token returned"}), 500
-
-    # Construir deeplink final
-    adjust_url = f"https://app.adjust.com/{tracker_token}"
-    query_params = {
-        "deep_link": deep_link,
-        "utm_source": utm.get("utm_source", ""),
-        "utm_campaign": utm.get("utm_campaign", ""),
-        "utm_medium": utm.get("utm_medium", "")
-    }
-    full_link = f"{adjust_url}?{urlencode(query_params)}"
+    if not shortlink:
+        return jsonify({"error": "Shortlink creation succeeded but no link returned"}), 500
 
     return jsonify({
-        "tracker_token": tracker_token,
-        "deeplink_final": full_link
+        "deeplink_final": shortlink
     })
